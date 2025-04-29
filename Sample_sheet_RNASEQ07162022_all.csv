@@ -1,0 +1,17 @@
+SampleName,FileName,CSRP3,oldRNA
+X1,RNA220718MH_CP_1_S1_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,1
+X2,RNA220718MH_CP_2_S2_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,1
+X5,RNA220718MH_CP_5_S3_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,1
+X6,RNA220718MH_CP_6_S4_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,1
+X10b,RNA220718MH_CP_10b_S14_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,0
+X11b,RNA220718MH_CP_11b_S15_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,0
+X12b,RNA220718MH_CP_12b_S16_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,0
+X1b,RNA220718MH_CP_1b_S5_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,0
+X2b,RNA220718MH_CP_2b_S6_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,0
+X3b,RNA220718MH_CP_3b_S7_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,0
+X4b,RNA220718MH_CP_4b_S8_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,0
+X5b,RNA220718MH_CP_5b_S9_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,0
+X6b,RNA220718MH_CP_6b_S10_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,CSRP310,0
+X7b,RNA220718MH_CP_7b_S11_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,0
+X8b,RNA220718MH_CP_8b_S12_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,0
+X9b,RNA220718MH_CP_9b_S13_L001_R1-2_001.paired-ReadsPerGene.out.annotation.tab,PBS,0

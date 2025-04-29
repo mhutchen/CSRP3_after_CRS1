@@ -1,0 +1,302 @@
+---
+title: "Fig7_final_20250428_DA"
+output: html_document
+date: "2025-4-29"
+---
+
+```{r read library, echo=TRUE, warning=FALSE, message= FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(DESeq2)  #BiocManager::install("DESeq2")
+library(enrichplot) #BiocManager::install("enrichplot")
+library(clusterProfiler) #BiocManager::install("clusterProfiler")
+library(ggplot2)
+library(ggrepel)
+library(stringr)
+library(edgeR) #BiocManager::install("edgeR")
+library(Seurat) #BiocManager::install("Seurat")
+library(dplyr)
+library(stringr)
+library(org.Mm.eg.db) #BiocManager::install("org.Mm.eg.db")
+library(org.Hs.eg.db) #BiocManager::install("org.Hs.eg.db")
+library(ggpubr)
+library(patchwork)
+
+#Handling expression data
+count_matrix <- read.delim("Protein_coding_raw_counts_08182022.csv", header=T, sep=",", row.names=1)
+young_count_matrix <- count_matrix[,c(-2, -3, -4, -5)]
+young_count_matrix2 <- mutate(young_count_matrix, total_lead=apply(young_count_matrix[-1],1,sum)) %>%
+                       arrange(., GeneName, -total_lead)  #calculate total_lead and sort
+young_count_matrix3 <- young_count_matrix2 %>% subset(!duplicated(young_count_matrix2$GeneName)) #erase duplicate
+young_count_matrix3$total_lead <- NULL
+
+#Handling meta data
+young_meta <- read.table("Sample_sheet_RNASEQ07162022_all.csv", header=T, sep=",") %>% subset(., oldRNA == !1)
+young_meta$treat_C <- ifelse(young_meta$CSRP3 == "PBS", "control", "CSRP3") 
+young_meta$treat_F <- as.factor(young_meta$treat)
+```
+```{r DESEQ , echo=FALSE, warning=FALSE, message= FALSE}
+DATA<-young_count_matrix3[-1]
+dds0 <- DESeqDataSetFromMatrix (countData=DATA, colData=young_meta, design=~treat_F, tidy = FALSE)                        
+dds <- DESeq(dds0, test="Wald", fitType='parametric') 
+ntd <- normTransform(dds)
+res <- results(dds)
+
+#Calculating with IHW
+library(IHW) #BiocManager::install("IHW")
+resIHW <- results(dds) 
+resIHWM <- subset(resIHW, padj !="NA")
+resIHWM <- resIHWM %>% data.frame() %>% rownames_to_column(var="ENSEMBL")# %>%  as_tibble()
+#resIHWM <- resIHWM[order(resIHWM$log2FoldChange, decreasing=TRUE),] #LFC順にならべとく
+resIHWM$symbol=mapIds(org.Hs.eg.db, keys=resIHWM$ENSEMBL, column="SYMBOL", keytype="ENSEMBL")
+resIHWM$entrez=mapIds(org.Hs.eg.db, keys=resIHWM$ENSEMBL, column="ENTREZID", keytype="ENSEMBL")
+resIHWM2 <-filter(resIHWM, symbol !="NA")
+resIHWM3 <- resIHWM2 %>% subset(!duplicated(resIHWM2$symbol)) 
+```
+
+
+```{r read hPTEC data, echo=FALSE, message= FALSE, catche=TRUE}
+library(nichenetr) #install.packages("devtools") -> devtools::install_github("saeyslab/nichenetr")
+hPTEC_DF <- resIHWM3 %>% dplyr::select(c("symbol","entrez","log2FoldChange", "padj"))
+h_genes <- hPTEC_DF$symbol
+hPTEC_DF$M_symbol <- convert_human_to_mouse_symbols(h_genes)
+hPTEC_DF <- dplyr::rename(hPTEC_DF, "SYMBOL"=symbol, "ENTREZ"=entrez, "hPTEC_LFC"=log2FoldChange)
+hPTEC_DF$ENSEMBL <- mapIds(org.Hs.eg.db, keys=hPTEC_DF$ENTREZ, column="ENSEMBL", keytype="ENTREZID")
+```
+
+```{r Volcano plot2, message=FALSE, warning=FALSE, fig.width=3.5, fig.height=5}
+library(EnhancedVolcano) #BiocManager::install("EnhancedVolcano")
+#volcano plot
+VP2 <- function(xxx,yyy,zzz){ 
+keyvals <- ifelse(xxx$padj > 0.05, 'gray', 
+                  ifelse(xxx$hPTEC_LFC < 0, 'blue',
+                         ifelse(xxx$hPTEC_LFC > 0, 'red', 'gray')))
+keyvals[is.na(keyvals)] <- 'gray'
+names(keyvals)[keyvals == 'red'] <- 'Up'
+names(keyvals)[keyvals == 'gray'] <- 'Not changed'
+names(keyvals)[keyvals == 'blue'] <- 'Down'
+                EnhancedVolcano(xxx, lab = yyy, title="hPTEC", subtitle = "PBS vs CSRP3", x = 'hPTEC_LFC',  y = 'padj'  
+                , selectLab = yyy %>% .[which(. %in% zzz)] 
+                , boxedLabels = TRUE, drawConnectors = TRUE
+                , pCutoff = 0.05,  cutoffLineType = "dotted"
+                , pointSize = 1.5, labSize = 3, colCustom = keyvals, legendLabSize = 10, axisLabSize=8
+                , colAlpha = 1, legendPosition = 'bottom', gridlines.major = FALSE, gridlines.minor = FALSE, caption=NULL)+
+                coord_cartesian(xlim = c(-0.5, 0.5), ylim = c(0, 3))}          
+VP2(hPTEC_DF, hPTEC_DF$SYMBOL, c("SMAD3", "IGFBP3", "SNN", "ELF3"))
+```
+```{r heatmap, message=FALSE, fig.width=3.5, fig.height=6}
+#heatmap
+mat <- counts(dds, normalized=TRUE)[subset(hPTEC_DF, padj<0.05) %>% .$ENSEMBL,]
+matz <- t(apply(mat, 1 , scale)) 
+rownames(matz) <- mapIds(org.Hs.eg.db, keys=rownames(matz), keytype="ENSEMBL", column="SYMBOL")
+
+library("ComplexHeatmap") #BiocManager::install("ComplexHeatmap")
+KCLUS <- kmeans(t(matz),2) #https://www.biostars.org/p/306473/
+SPLIT <- factor(paste0("Cluster\n", KCLUS$cluster), levels=c("Cluster\n2", "Cluster\n1"))
+
+pHmap1 <- ComplexHeatmap::Heatmap(
+          matz, cluster_rows=F, cluster_columns = F, column_labels = colnames(matz), cluster_column_slices = F
+        , name="Z-score", row_km = 2, row_title = NULL, column_title = c("CSRP3","PBS"),
+        column_split=SPLIT, column_km = 2
+        , row_names_gp = gpar(fontsize = 7), column_names_gp = gpar(fontsize = 0))
+
+pHmap1
+```
+
+```{r hPTEC-GSEA:preparation, message=FALSE, warning=FALSE}
+#hPTEC-GSEA:preparation
+library(msigdbr)
+H_HM <- msigdbr(species = "Homo sapiens",  category = "H") %>% dplyr::select(gs_name, entrez_gene) 
+H_HM$gs_name <- H_HM$gs_name %>% str_remove(.,"HALLMARK_") %>% gsub("_"," ",.)
+hPTEC_DF <- hPTEC_DF %>% arrange(., -hPTEC_LFC)
+hPTEC_genelist <- hPTEC_DF$hPTEC_LFC
+names(hPTEC_genelist) <- hPTEC_DF$ENTREZ
+```
+
+```{r hPTEC-GSEA, cache = TRUE, message=FALSE, warning=FALSE} 
+#hPTEC-GSEA
+library(clusterProfiler) #BiocManager::install("clusterProfiler")
+set.seed(123)
+H_GSEA <- GSEA(hPTEC_genelist, TERM2GENE = H_HM, minGSSize = 10, maxGSSize = 500, 
+            pAdjustMethod = "BH", pvalueCutoff = 5)
+
+sig_H_GSEA_pathway <- H_GSEA@result %>% subset(p.adjust<0.05) %>% arrange(NES) %>% .$Description %>% factor(., level=.)
+H_GSEA@result$Description <- factor(H_GSEA@result$Description, level=sig_H_GSEA_pathway)
+```
+
+```{r make clear copy of hPTEC-GSEA, fig.width=5, fig.height=6}
+H_GSEA@result$core_gene_count <- sapply(strsplit(H_GSEA@result$core_enrichment, "/"), length)
+H_GSEA@result$GeneRatio <- H_GSEA@result$core_gene_count/H_GSEA@result$setSize
+
+h2 <- ggplot(H_GSEA@result %>% na.omit(), aes(x = NES, y = Description, size = GeneRatio, color = p.adjust))+
+  geom_point() +  scale_color_gradient2(low = "gray80", mid="lightblue", midpoint=0.04,high = "darkblue", transform = "reverse", limits=c(0.05, 10e-100)) +
+  scale_size(range = c(0, 7)) +  theme_minimal() +  #theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  geom_vline(xintercept = 0, linetype = "dotted", color = "gray")+
+  labs(x = "NES", y = "", title = "hPTECs", size = "GeneRatio", color = "p.adjust")+ 
+  coord_cartesian(xlim = c(-3.6, 3.6))+
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5), axis.text = element_text(size=10, color="black"))
+h2
+```
+
+```{r read seurat, cache = TRUE, warning=FALSE, message=FALSE}
+#read seurat and extract PT cluster
+PT_CACPR <- readRDS("CACPR_integrated.rds") %>% subset(., class.CACPR == "PT")
+
+#Recluster the PT Cells
+PT_CACPR <- FindVariableFeatures(PT_CACPR, selection.method = "vst", nfeatures = 2000)
+all.genes.PT_CACPR <- rownames(PT_CACPR)
+PT_CACPR <- ScaleData(PT_CACPR, features = all.genes.PT_CACPR)
+PT_CACPR <- RunPCA(PT_CACPR, npcs = 30, verbose = FALSE)
+
+# UMAP and Clustering
+DefaultAssay(PT_CACPR) <- "integrated"
+PT_CACPR <- RunUMAP(PT_CACPR, reduction = "pca", dims = 1:06)
+PT_CACPR <- FindNeighbors(PT_CACPR, reduction = "pca", dims = 1:06)
+PT_CACPR <- FindClusters(PT_CACPR, resolution = 0.06)
+DefaultAssay(PT_CACPR) <- "RNA"
+DimPlot(PT_CACPR, reduction = "umap", label = TRUE, label.size=6)+NoLegend()
+```
+
+```{r Tdentify PT clusters, warning=FALSE}
+#Use Jonathan's convention to identify PT clusters
+markers.to.plot.PT <- c("Hspa1a", "Krt20", "Havcr1", "Slc16a9",  "Slc13a3", "Slc5a12", "Lrp2")
+
+DotPlot(PT_CACPR, features = markers.to.plot.PT, dot.scale = 8, dot.min = 0, scale.max = 60, scale.min = 0, col.min = -2.5, col.max = 2.5) +
+  coord_flip() +  theme_classic() +
+  theme(axis.line = element_line(size = 1, colour = "black"),
+        axis.ticks.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        text = element_text(size=20),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab(NULL) +  ylab(NULL)
+
+#Rename the clusters
+new.cluster.ids.PT_CACPR <- c("PTinj", "PTS1", "PTS2", "PTS3")
+names(new.cluster.ids.PT_CACPR) <- levels(PT_CACPR)
+PT_CACPR <- RenameIdents(PT_CACPR, new.cluster.ids.PT_CACPR)
+PT_CACPR[["CellType"]] <- Idents(PT_CACPR)
+levels(PT_CACPR) <- c("PTS1", "PTS2", "PTS3", "PTinj")
+DimPlot(PT_CACPR, reduction = "umap", label = TRUE, label.size = 6, pt.size = 0.75) + NoLegend()
+```
+
+
+```{r go back to DA code, warning=FALSE, message=FALSE}
+#adding metadata
+PT_CACPR <- AddMetaData(PT_CACPR, metadata = ifelse(PT_CACPR@meta.data$class.sample=="CACPR Sham", "CA Sham", "CA/CPR"), col.name = "treat")
+PT_CACPR@meta.data$treat <- factor(PT_CACPR@meta.data$treat, levels=c("CA Sham","CA/CPR"))
+PT_CACPR <- AddMetaData(PT_CACPR, metadata = paste(PT_CACPR@meta.data$subclass.CACPR, PT_CACPR@meta.data$treat, sep="_"), col.name = "cluster-treat")
+```
+
+```{r Pseudobulk:calculate gene exp in each cluster&treatment}
+### calculate gene expressions in each cluster.
+#Aggregation
+cts <- AggregateExpression(PT_CACPR, 
+                    group.by = c("CellType", "treat"),
+                    assays = 'RNA',
+                    slot = "counts",
+                    return.seurat = FALSE)
+
+cts <- cts$RNA
+cts.t <- t(cts)
+cts.t <- as.data.frame(cts.t)
+splitRows <- gsub('_.*', '', rownames(cts.t))
+cts.split <- split.data.frame(cts.t,
+                 f = factor(splitRows))
+cts.split.modified <- lapply(cts.split, function(x){
+  rownames(x) <- gsub('.*_(.*)', '\\1', rownames(x))
+  t(x)
+})
+
+counts_PTS1 <- cts.split.modified$PTS1
+counts_PTS2 <- cts.split.modified$PTS2
+counts_PTS3 <- cts.split.modified$PTS3
+counts_PTinj <- cts.split.modified$PTinj
+
+counts_PTS1_DF <- counts_PTS1 %>% unlist() %>% as.data.frame() %>% mutate(cluster="PTS1", "M_symbol"=rownames(.)) %>% remove_rownames()
+counts_PTS2_DF <- counts_PTS2 %>% unlist() %>% as.data.frame() %>% mutate(cluster="PTS2", "M_symbol"=rownames(.)) %>% remove_rownames()
+counts_PTS3_DF <- counts_PTS3 %>% unlist() %>% as.data.frame() %>% mutate(cluster="PTS3", "M_symbol"=rownames(.)) %>% remove_rownames()
+counts_PTinj_DF <- counts_PTinj %>% unlist() %>% as.data.frame() %>% mutate(cluster="PTinj", "M_symbol"=rownames(.)) %>% remove_rownames()
+
+counts_PTall_DF <- rbind(counts_PTS1_DF, counts_PTS2_DF, counts_PTS3_DF, counts_PTinj_DF)
+counts_PTall_DF$cluster <- factor(counts_PTall_DF$cluster, levels=c("PTS1","PTS2", "PTS3", "PTinj"))
+
+counts_PTall_DF$M_LFC <- (counts_PTall_DF$'CA/CPR'/counts_PTall_DF$'CA Sham') %>%  log2(.) #cut genes with no expression in the cluster both in sham&CACPR 
+counts_PTall_DF <- counts_PTall_DF %>%  filter(!is.infinite(M_LFC)) %>% filter(!is.na(M_LFC)) %>% arrange(-M_LFC)
+```
+
+
+```{r Making integrated DF with hPTEC&scRNA} 
+#Make integrated DF for ggpplot
+h_PTall <- left_join(counts_PTall_DF, hPTEC_DF, by="M_symbol") %>% subset(!is.na(SYMBOL)) 
+```
+
+```{r find core genes of some "key" pathways  using hPTEC reslut, message=FALSE, warning=FALSE}
+#Find core genes of some "key" pathways using hPTEC result
+hCEG <- na.omit(H_GSEA@result) %>% dplyr::select(Description, core_enrichment) 
+hCEG$core_enrichment <- hCEG$core_enrichment %>% strsplit(., "/")
+
+hCEG_E2F <- hCEG["E2F TARGETS",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_E2F$pathway <- "E2F"
+hCEG_G2M <- hCEG["G2M CHECKPOINT",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_G2M$pathway <- "G2M"
+hCEG_MV2 <- hCEG["MYC TARGETS V2",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_MV2$pathway <- "MV2"
+hCEG_MS <- hCEG["MITOTIC SPINDLE",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_MS$pathway <- "MS"
+hCEG_KUP <- hCEG["KRAS SIGNALING UP",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_KUP$pathway <- "KUP"
+hCEG_GLY <- hCEG["GLYCOLYSIS",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_GLY$pathway <- "GLY"
+hCEG_ADP <- hCEG["ADIPOGENESIS",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_ADP$pathway <- "ADP"
+hCEG_TNF <- hCEG["TNFA SIGNALING VIA NFKB",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_TNF$pathway <- "TNF"
+hCEG_UV <- hCEG["UV RESPONSE UP",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_UV$pathway <- "UV"
+hCEG_P53 <- hCEG["P53 PATHWAY",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_P53$pathway <- "P53"
+hCEG_MYG <- hCEG["MYOGENESIS",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_MYG$pathway <- "MYG"
+hCEG_KDN <- hCEG["KRAS SIGNALING DN",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_KDN$pathway <- "KDN"
+hCEG_OXPH <- hCEG["OXIDATIVE PHOSPHORYLATION",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_OXPH$pathway <- "OXPH"
+hCEG_HYPO <- hCEG["HYPOXIA",]$core_enrichment %>% as.vector() %>% unlist() %>% as.data.frame() %>% rename("ENTREZ"=".")
+hCEG_HYPO$pathway <- "HYPO"
+
+hCEG_Pathways <- rbind(hCEG_E2F, hCEG_G2M, hCEG_MV2, hCEG_MS, hCEG_KUP, hCEG_GLY, hCEG_ADP, hCEG_TNF, hCEG_UV,hCEG_P53, hCEG_MYG, hCEG_KDN, hCEG_OXPH, hCEG_HYPO)
+hCEG_Pathways$SYMBOL <- mapIds(org.Hs.eg.db, keys=hCEG_Pathways$ENTREZ, column="SYMBOL", keytype="ENTREZID")
+CEG<-left_join(hCEG_Pathways, h_PTall %>% 
+                     dplyr::select(SYMBOL, hPTEC_LFC, padj, M_symbol, M_LFC), by="SYMBOL")
+CEG %>% subset(padj<0.05) %>% .$SYMBOL %>% unique() #unique 4 genes -> SMAD3, IGFBP3, ELF3, SNN
+```
+
+
+```{r gene expression dotplot only in PTinj 2, warning=FALSE, fig.width=3.5, fig.height=4}
+#Check expression of hPTEC-key pathway-core genes in scRNA (dotplot)
+dotdataCEGsB0 <- DotPlot(PT_CACPR, features = hPTEC_DF %>% subset(padj<0.05) %>% .$M_symbol %>% unique()
+                        ,  split.by = "treat") %>% .$data
+dotdataCEGsB <- left_join(dotdataCEGsB0, 
+                          rename(as.data.frame(table(PT_CACPR@meta.data$`cluster-treat`)), "id"=Var1), by="id")
+dotdataCEGsB$num.exp <- dotdataCEGsB$Freq * dotdataCEGsB$pct.exp /100
+
+#core genes with p<0.05 at hPTECs 
+ggplot(dotdataCEGsB %>% subset(features.plot %in% c(CEG %>% subset(padj<0.05) %>% .$M_symbol %>% unique())), 
+       aes(x = id, y = features.plot, size = num.exp, color = avg.exp))+
+  geom_point() +  
+  scale_size_continuous(range = c(2, 7))+#, limits = c(1, 10000)) +
+  scale_color_gradient2(low = "gray99", mid="gray90", high = "red")+
+  theme_minimal() +  #theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(x = NULL, y = NULL, title = NULL, size = "Counts\nExpressed", color = "Average\nExpression")+ 
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(),
+        panel.border = element_blank(), axis.line = element_line(color = "black", linewidth = 0.5),
+        axis.line.x.top = element_blank(),  axis.line.y.right = element_blank(),
+        legend.position = "right", axis.text.x = element_text(angle = 45, hjust = 1))+
+  theme(axis.text = element_text(size=8, color = "black"), axis.text.y = element_text(size=10, face = "italic"), 
+        legend.key.height = unit(5, 'mm'), legend.title = element_text(size=7))
+
+```
